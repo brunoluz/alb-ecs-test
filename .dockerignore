@@ -1,0 +1,7 @@
+.git
+.terraform
+.DS_Store
+*.tf
+*.tfvars
+terraform.tfstate*
+README.md
