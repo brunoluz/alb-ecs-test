@@ -57,24 +57,8 @@ resource "terraform_data" "app_image" {
   input = local.app_image_source_hash
 
   provisioner "local-exec" {
-    command = <<-EOT
-      set -eu
-      aws ecr get-login-password --region "$AWS_REGION" \
-        | docker login --username AWS --password-stdin "$ECR_REGISTRY"
-      docker build --platform linux/amd64 \
-        --file "$DOCKERFILE_PATH" \
-        --tag "$IMAGE_URI" \
-        "$BUILD_CONTEXT"
-      docker push "$IMAGE_URI"
-    EOT
-
-    environment = {
-      AWS_REGION      = var.region
-      ECR_REGISTRY    = split("/", aws_ecr_repository.app.repository_url)[0]
-      IMAGE_URI       = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
-      DOCKERFILE_PATH = "${path.module}/Dockerfile"
-      BUILD_CONTEXT   = path.module
-    }
+    working_dir = path.module
+    command     = "aws ecr get-login-password --region ${var.region} | docker login --username AWS --password-stdin ${split("/", aws_ecr_repository.app.repository_url)[0]} && docker build --platform linux/amd64 --file Dockerfile --tag ${aws_ecr_repository.app.repository_url}:${var.image_tag} . && docker push ${aws_ecr_repository.app.repository_url}:${var.image_tag}"
   }
 }
 
