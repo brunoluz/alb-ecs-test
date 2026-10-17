@@ -16,6 +16,13 @@ locals {
   app_image_source_hash = sha256(join("", [
     for file in local.app_image_source_files : "${file}:${filesha256("${path.module}/${file}")}"
   ]))
+  app2_image_source_files = concat(
+    [".dockerignore", "Dockerfile.app2", "requirements.txt"],
+    [for file in sort(fileset("${path.module}/app2", "**")) : "app2/${file}"]
+  )
+  app2_image_source_hash = sha256(join("", [
+    for file in local.app2_image_source_files : "${file}:${filesha256("${path.module}/${file}")}"
+  ]))
 }
 
 data "aws_subnets" "default" {
@@ -58,12 +65,68 @@ resource "terraform_data" "app_image" {
 
   provisioner "local-exec" {
     working_dir = path.module
-    command     = "aws ecr get-login-password --region ${var.region} | docker login --username AWS --password-stdin ${split("/", aws_ecr_repository.app.repository_url)[0]} && docker build --platform linux/amd64 --file Dockerfile --tag ${aws_ecr_repository.app.repository_url}:${var.image_tag} . && docker push ${aws_ecr_repository.app.repository_url}:${var.image_tag}"
+    command     = <<-EOT
+      set -eu
+      export DOCKER_CONFIG="$(mktemp -d)"
+      trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+      registry="${split("/", aws_ecr_repository.app.repository_url)[0]}"
+      password="$(aws ecr get-login-password --region ${var.region})"
+      auth="$(printf 'AWS:%s' "$password" | base64 | tr -d '\r\n')"
+      unset password
+      printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$registry" "$auth" > "$DOCKER_CONFIG/config.json"
+      chmod 600 "$DOCKER_CONFIG/config.json"
+      unset auth
+      docker build --platform linux/amd64 --file Dockerfile --tag ${aws_ecr_repository.app.repository_url}:${var.image_tag} .
+      docker push ${aws_ecr_repository.app.repository_url}:${var.image_tag}
+    EOT
+  }
+}
+
+resource "aws_ecr_repository" "app2" {
+  name                 = "alb-teste-fastapi-service2"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "terraform_data" "app2_image" {
+  triggers_replace = {
+    image_tag      = var.image_tag
+    repository_url = aws_ecr_repository.app2.repository_url
+    source_hash    = local.app2_image_source_hash
+  }
+
+  input = local.app2_image_source_hash
+
+  provisioner "local-exec" {
+    working_dir = path.module
+    command     = <<-EOT
+      set -eu
+      export DOCKER_CONFIG="$(mktemp -d)"
+      trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+      registry="${split("/", aws_ecr_repository.app2.repository_url)[0]}"
+      password="$(aws ecr get-login-password --region ${var.region})"
+      auth="$(printf 'AWS:%s' "$password" | base64 | tr -d '\r\n')"
+      unset password
+      printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$registry" "$auth" > "$DOCKER_CONFIG/config.json"
+      chmod 600 "$DOCKER_CONFIG/config.json"
+      unset auth
+      docker build --platform linux/amd64 --file Dockerfile.app2 --tag ${aws_ecr_repository.app2.repository_url}:${var.image_tag} .
+      docker push ${aws_ecr_repository.app2.repository_url}:${var.image_tag}
+    EOT
   }
 }
 
 resource "aws_cloudwatch_log_group" "app" {
   name              = "/ecs/alb-teste-fastapi"
+  retention_in_days = 7
+}
+
+resource "aws_cloudwatch_log_group" "app2" {
+  name              = "/ecs/alb-teste-fastapi-service2"
   retention_in_days = 7
 }
 
@@ -175,6 +238,25 @@ resource "aws_lb_target_group" "app" {
   }
 }
 
+resource "aws_lb_target_group" "app2" {
+  name        = "alb-teste-fastapi-service2"
+  port        = 8081
+  protocol    = "HTTP"
+  target_type = "ip"
+  vpc_id      = data.aws_vpc.default.id
+
+  health_check {
+    enabled             = true
+    path                = "/health"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+  }
+}
+
 resource "aws_lb_listener" "app" {
   load_balancer_arn = aws_lb.app.arn
   port              = 8081
@@ -183,6 +265,22 @@ resource "aws_lb_listener" "app" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.app.arn
+  }
+}
+
+resource "aws_lb_listener_rule" "app2" {
+  listener_arn = aws_lb_listener.app.arn
+  priority     = 10
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.app2.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/service2"]
+    }
   }
 }
 
@@ -265,6 +363,81 @@ resource "aws_ecs_service" "app" {
   ]
 }
 
+resource "aws_ecs_task_definition" "app2" {
+  family                   = "alb-teste-fastapi-service2"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 512
+  memory                   = 1024
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name      = "fastapi-service2"
+      image     = "${aws_ecr_repository.app2.repository_url}:${var.image_tag}"
+      essential = true
+
+      dockerLabels = {
+        "app.image.source-hash" = terraform_data.app2_image.output
+      }
+
+      portMappings = [
+        {
+          containerPort = 8081
+          hostPort      = 8081
+          protocol      = "tcp"
+        }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.app2.name
+          awslogs-region        = var.region
+          awslogs-stream-prefix = "fastapi-service2"
+        }
+      }
+    }
+  ])
+}
+
+resource "aws_ecs_service" "app2" {
+  name            = "servico-2"
+  cluster         = aws_ecs_cluster.app.id
+  task_definition = aws_ecs_task_definition.app2.arn
+  desired_count   = 2
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = local.subnet_ids
+    security_groups  = [aws_security_group.tasks.id]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.app2.arn
+    container_name   = "fastapi-service2"
+    container_port   = 8081
+  }
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  health_check_grace_period_seconds = 60
+
+  depends_on = [
+    aws_iam_role_policy_attachment.ecs_task_execution,
+    aws_lb_listener_rule.app2
+  ]
+}
+
 resource "aws_apigatewayv2_vpc_link" "app" {
   name               = "alb-teste-vpc-link"
   subnet_ids         = local.subnet_ids
@@ -289,6 +462,12 @@ resource "aws_apigatewayv2_integration" "app" {
 resource "aws_apigatewayv2_route" "test" {
   api_id    = aws_apigatewayv2_api.app.id
   route_key = "GET /teste"
+  target    = "integrations/${aws_apigatewayv2_integration.app.id}"
+}
+
+resource "aws_apigatewayv2_route" "service2" {
+  api_id    = aws_apigatewayv2_api.app.id
+  route_key = "GET /service2"
   target    = "integrations/${aws_apigatewayv2_integration.app.id}"
 }
 

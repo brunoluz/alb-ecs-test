@@ -1,9 +1,10 @@
 # PoC: API Gateway -> ALB -> ECS Fargate
 
-Este projeto cria uma HTTP API do API Gateway com `GET /teste`, integrada por
-VPC Link a um ALB interno. O ALB encaminha as chamadas para duas tasks ECS
-Fargate com uma aplicação FastAPI na porta `8081`. A resposta de `GET /teste`
-é o texto plano `testado`.
+Este projeto cria uma HTTP API do API Gateway integrada por VPC Link a um ALB
+interno. O ALB encaminha `GET /teste` para o serviço `alb-teste-fastapi` e
+`GET /service2` para o serviço ECS `servico-2`; ambos rodam aplicações FastAPI
+na porta `8081`. As respostas são texto plano: `testado` em `/teste` e
+`segundo service` em `/service2`.
 
 ## Rede utilizada
 
@@ -26,9 +27,11 @@ conexões somente do VPC Link. Nenhum NAT Gateway é criado.
 
 ## Criar a infraestrutura e publicar a aplicação
 
-O `terraform apply` cria o repositório ECR, autentica o Docker na AWS, constrói
-a imagem da aplicação e a publica no ECR antes de criar a task definition do
-ECS. Execute na raiz do projeto:
+O `terraform apply` cria os repositórios ECR, obtém credenciais temporárias da
+AWS, constrói as imagens da aplicação e as publica no ECR antes de criar as
+task definitions do ECS. As credenciais são gravadas em uma configuração Docker
+temporária e isolada, removida ao final, sem usar o Keychain do sistema. Execute
+na raiz do projeto:
 
 ```sh
 terraform init
@@ -41,8 +44,10 @@ Se usar outra região, configure-a no apply, por exemplo:
 Para publicar uma tag diferente de `latest`, use
 `terraform apply -var="image_tag=v1"`. Alterações no `Dockerfile`,
 `requirements.txt`, `.dockerignore` ou nos arquivos de `app/` fazem o Terraform
-reconstruir e publicar a imagem automaticamente. A mudança do conteúdo da
-imagem também gera uma nova revisão da task definition e um novo deployment ECS.
+reconstruir e publicar a primeira imagem. Alterações no `Dockerfile.app2`,
+`requirements.txt`, `.dockerignore` ou nos arquivos de `app2/` fazem o mesmo
+para a segunda imagem. A mudança do conteúdo de cada imagem também gera uma
+nova revisão da task definition correspondente e um novo deployment ECS.
 
 Quando o `terraform apply` terminar, consulte `test_url` com:
 
@@ -51,14 +56,21 @@ curl "$(terraform output -raw test_url)"
 ```
 
 O corpo da resposta deve ser `testado` e o `Content-Type` deve indicar texto
-plano. O endpoint pode levar alguns minutos para ficar pronto enquanto o VPC
-Link é provisionado e as tasks passam no health check do ALB.
+plano. Para testar o segundo serviço:
+
+```sh
+curl "$(terraform output -raw service2_url)"
+```
+
+O corpo da resposta deve ser `segundo service`. Os endpoints podem levar alguns
+minutos para ficar prontos enquanto o VPC Link é provisionado e as tasks passam
+no health check do ALB.
 
 ## Custos e limpeza
 
 Esta PoC cria recursos cobrados enquanto estiverem ativos, incluindo ALB,
-VPC Link, duas tasks Fargate e endereços IPv4 públicos. Verifique os preços da
-região antes de aplicar. Para remover os recursos e a imagem do ECR:
+VPC Link, quatro tasks Fargate e endereços IPv4 públicos. Verifique os preços
+da região antes de aplicar. Para remover os recursos e as imagens do ECR:
 
 ```sh
 terraform destroy
