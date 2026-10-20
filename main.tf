@@ -279,7 +279,7 @@ resource "aws_lb_listener_rule" "app2" {
 
   condition {
     path_pattern {
-      values = ["/service2"]
+      values = ["/service2", "/prod/service2"]
     }
   }
 }
@@ -444,35 +444,88 @@ resource "aws_apigatewayv2_vpc_link" "app" {
   security_group_ids = [aws_security_group.vpc_link.id]
 }
 
-resource "aws_apigatewayv2_api" "app" {
-  name          = "alb-teste-http-api"
-  protocol_type = "HTTP"
+resource "aws_api_gateway_rest_api" "app" {
+  name = "alb-teste-rest-api"
 }
 
-resource "aws_apigatewayv2_integration" "app" {
-  api_id                 = aws_apigatewayv2_api.app.id
-  integration_type       = "HTTP_PROXY"
-  integration_method     = "ANY"
-  integration_uri        = aws_lb_listener.app.arn
-  connection_type        = "VPC_LINK"
-  connection_id          = aws_apigatewayv2_vpc_link.app.id
-  payload_format_version = "1.0"
+resource "aws_api_gateway_resource" "test" {
+  rest_api_id = aws_api_gateway_rest_api.app.id
+  parent_id   = aws_api_gateway_rest_api.app.root_resource_id
+  path_part   = "teste"
 }
 
-resource "aws_apigatewayv2_route" "test" {
-  api_id    = aws_apigatewayv2_api.app.id
-  route_key = "GET /teste"
-  target    = "integrations/${aws_apigatewayv2_integration.app.id}"
+resource "aws_api_gateway_method" "test" {
+  rest_api_id   = aws_api_gateway_rest_api.app.id
+  resource_id   = aws_api_gateway_resource.test.id
+  http_method   = "GET"
+  authorization = "NONE"
 }
 
-resource "aws_apigatewayv2_route" "service2" {
-  api_id    = aws_apigatewayv2_api.app.id
-  route_key = "GET /service2"
-  target    = "integrations/${aws_apigatewayv2_integration.app.id}"
+resource "aws_api_gateway_integration" "test" {
+  rest_api_id             = aws_api_gateway_rest_api.app.id
+  resource_id             = aws_api_gateway_resource.test.id
+  http_method             = aws_api_gateway_method.test.http_method
+  integration_http_method = "GET"
+  type                    = "HTTP_PROXY"
+  uri                     = "http://${aws_lb.app.dns_name}:8081/teste"
+  integration_target      = aws_lb.app.arn
+  connection_type         = "VPC_LINK"
+  connection_id           = aws_apigatewayv2_vpc_link.app.id
+  passthrough_behavior    = "WHEN_NO_MATCH"
 }
 
-resource "aws_apigatewayv2_stage" "default" {
-  api_id      = aws_apigatewayv2_api.app.id
-  name        = "$default"
-  auto_deploy = true
+resource "aws_api_gateway_resource" "service2" {
+  rest_api_id = aws_api_gateway_rest_api.app.id
+  parent_id   = aws_api_gateway_rest_api.app.root_resource_id
+  path_part   = "service2"
+}
+
+resource "aws_api_gateway_method" "service2" {
+  rest_api_id   = aws_api_gateway_rest_api.app.id
+  resource_id   = aws_api_gateway_resource.service2.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "service2" {
+  rest_api_id             = aws_api_gateway_rest_api.app.id
+  resource_id             = aws_api_gateway_resource.service2.id
+  http_method             = aws_api_gateway_method.service2.http_method
+  integration_http_method = "GET"
+  type                    = "HTTP_PROXY"
+  uri                     = "http://${aws_lb.app.dns_name}:8081/service2"
+  integration_target      = aws_lb.app.arn
+  connection_type         = "VPC_LINK"
+  connection_id           = aws_apigatewayv2_vpc_link.app.id
+  passthrough_behavior    = "WHEN_NO_MATCH"
+}
+
+resource "aws_api_gateway_deployment" "app" {
+  rest_api_id = aws_api_gateway_rest_api.app.id
+
+  triggers = {
+    redeployment = sha1(jsonencode({
+      resources = ["/teste", "/service2"]
+      methods   = ["GET", "GET"]
+      integrations = [
+        aws_api_gateway_integration.test,
+        aws_api_gateway_integration.service2
+      ]
+    }))
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  depends_on = [
+    aws_api_gateway_integration.test,
+    aws_api_gateway_integration.service2
+  ]
+}
+
+resource "aws_api_gateway_stage" "app" {
+  rest_api_id   = aws_api_gateway_rest_api.app.id
+  deployment_id = aws_api_gateway_deployment.app.id
+  stage_name    = "prod"
 }

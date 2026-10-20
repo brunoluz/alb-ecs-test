@@ -1,10 +1,14 @@
 # PoC: API Gateway -> ALB -> ECS Fargate
 
-Este projeto cria uma HTTP API do API Gateway integrada por VPC Link a um ALB
-interno. O ALB encaminha `GET /teste` para o serviço `alb-teste-fastapi` e
+Este projeto cria uma REST API do API Gateway integrada por VPC Link v2 a um ALB
+interno. A API usa o estágio `prod`; seus outputs já incluem esse prefixo. O ALB
+encaminha `GET /teste` para o serviço `alb-teste-fastapi` e
 `GET /service2` para o serviço ECS `servico-2`; ambos rodam aplicações FastAPI
 na porta `8081`. As respostas são texto plano: `testado` em `/teste` e
 `segundo service` em `/service2`.
+
+Cada integração privada aponta explicitamente ao caminho correspondente na
+aplicação (`/teste` ou `/service2`), mantendo o roteamento existente no ALB.
 
 ## Rede utilizada
 
@@ -20,8 +24,8 @@ conexões somente do VPC Link. Nenhum NAT Gateway é criado.
 ## Pré-requisitos
 
 - Terraform `>= 1.5`
-- AWS CLI autenticado com permissões para criar API Gateway, VPC Link, EC2
-  security groups, ALB, ECS, ECR, CloudWatch Logs e IAM
+- AWS CLI autenticado com permissões para criar API Gateway REST API, VPC Link,
+  EC2 security groups, ALB, ECS, ECR, CloudWatch Logs e IAM
 - Docker em execução na máquina onde o Terraform será executado
 - Uma VPC default com sub-redes default em pelo menos duas zonas
 

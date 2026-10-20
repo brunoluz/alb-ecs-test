@@ -5,6 +5,7 @@ app = FastAPI()
 
 
 @app.get("/teste", response_class=PlainTextResponse)
+@app.get("/prod/teste", response_class=PlainTextResponse)
 def teste() -> str:
     return "testado"
 

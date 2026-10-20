@@ -9,18 +9,18 @@ output "ecr_repository_service2_url" {
 }
 
 output "api_endpoint" {
-  description = "Endpoint base da API Gateway HTTP API."
-  value       = aws_apigatewayv2_api.app.api_endpoint
+  description = "Endpoint base da API Gateway REST API."
+  value       = aws_api_gateway_stage.app.invoke_url
 }
 
 output "test_url" {
   description = "URL da rota GET /teste."
-  value       = "${aws_apigatewayv2_api.app.api_endpoint}/teste"
+  value       = "${aws_api_gateway_stage.app.invoke_url}/teste"
 }
 
 output "service2_url" {
   description = "URL da rota GET /service2."
-  value       = "${aws_apigatewayv2_api.app.api_endpoint}/service2"
+  value       = "${aws_api_gateway_stage.app.invoke_url}/service2"
 }
 
 output "ecs_cluster_name" {
